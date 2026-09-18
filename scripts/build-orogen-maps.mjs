@@ -145,13 +145,15 @@ async function buildMap(page, bundleBytes, cells) {
       const header = await window.Orogen.load(buffer);
       window.Orogen.applyOptions();
 
-      // The detail slider is the cell budget. It has to be locked as well as set:
-      // generate() calls randomizeOptions(), which resets an unlocked density
-      // back to the 10K default before the grid is built.
+      // The detail slider is the cell budget. Grid.getCellsDesired() reads the
+      // dataset attribute, not the slider position, so setting it directly lifts the
+      // UI's 100K ceiling — nothing downstream is 16-bit indexed. It has to be
+      // locked as well as set: generate() calls randomizeOptions(), which resets an
+      // unlocked density back to the 10K default before the grid is built.
       const densitySteps = { 1000: 1, 2000: 2, 5000: 3, 10000: 4, 20000: 5, 30000: 6, 40000: 7, 50000: 8, 60000: 9, 70000: 10, 80000: 11, 90000: 12, 100000: 13 };
-      const step = densitySteps[cells];
-      if (!step) throw new Error(`${cells} is not one of FMG's cell counts: ${Object.keys(densitySteps).join(", ")}`);
-      window.changeCellsDensity(step);
+      const pointsInput = document.getElementById("pointsInput");
+      pointsInput.value = String(densitySteps[cells] ?? 13);
+      pointsInput.dataset.cells = String(cells);
       window.lock("points");
 
       window.mapName.value = header.label;

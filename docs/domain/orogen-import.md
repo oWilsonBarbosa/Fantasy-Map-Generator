@@ -93,6 +93,14 @@ whole map.
 - Winds and ocean currents have no per-cell field here and are dropped. They
   shaped the imported rainfall and temperature, so their effect survives even
   though the vectors do not.
-- At 100 000 cells a whole planet is about 72 km per cell, which is too coarse for
-  burgs and states to mean much. Per-continent bundles exist for that reason and
-  are the ones to reach for.
+- The bundle's box decides the ground resolution, because the grid is uniform over
+  the canvas. At 100 000 cells a whole planet is ~71 km per cell, a continent
+  25–30 km, and a 20M km² box 14 km — the last matching the source mesh exactly.
+  Reach for the smallest box that covers what you care about.
+- The 100 000 ceiling is the options slider, not the engine: `grid.cells.i` and
+  `pack.cells.g` are `Uint32Array` and `Grid.getCellsDesired()` reads
+  `pointsInput.dataset.cells`, so setting that directly works.
+  `scripts/build-orogen-maps.mjs --cells` does exactly that. Measured on a
+  continent bundle: 100K → 11 s, 300K → 45 s, 1M → 425 s, so cost grows far
+  faster than cell count. Past the budget where an imported cell covers one
+  source cell, the extra cells interpolate rather than resolve.
