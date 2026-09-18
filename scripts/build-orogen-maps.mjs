@@ -35,7 +35,8 @@ function parseArgs(argv) {
     cells: 100000,
     only: null,
     screenshots: true,
-    reloadCheck: true
+    reloadCheck: true,
+    burgs: null // null leaves FMG's "auto", which scales burgs to cells^0.2
   };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--bundles") args.bundles = argv[++i];
@@ -44,6 +45,7 @@ function parseArgs(argv) {
     else if (argv[i] === "--only") args.only = argv[++i];
     else if (argv[i] === "--no-screenshots") args.screenshots = false;
     else if (argv[i] === "--no-reload-check") args.reloadCheck = false;
+    else if (argv[i] === "--burgs") args.burgs = +argv[++i];
     else throw new Error(`unknown argument ${argv[i]}`);
   }
   return args;
@@ -138,9 +140,9 @@ async function startPreview() {
 }
 
 /** Everything below runs inside the page, against the real app globals. */
-async function buildMap(page, bundleBytes, cells) {
+async function buildMap(page, bundleBytes, cells, burgs) {
   return page.evaluate(
-    async ({ bytes, cells }) => {
+    async ({ bytes, cells, burgs }) => {
       const buffer = new Uint8Array(bytes).buffer;
       const header = await window.Orogen.load(buffer);
       window.Orogen.applyOptions();
@@ -155,6 +157,19 @@ async function buildMap(page, bundleBytes, cells) {
       pointsInput.value = String(densitySteps[cells] ?? 13);
       pointsInput.dataset.cells = String(cells);
       window.lock("points");
+
+      // Burg count is not a function of resolution: FMG's auto formula is
+      // populatedCells / 5 / (gridCells/10000)**0.8, so burgs grow only as
+      // cells**0.2 and adding cells makes each burg's cell smaller rather than
+      // adding towns. Density is this knob. The slider's max is 1000 and 1000 is
+      // also its "auto" sentinel, so the attribute has to move before the value.
+      if (burgs) {
+        const manorsInput = document.getElementById("manorsInput");
+        manorsInput.max = String(Math.max(burgs, 1000));
+        manorsInput.value = String(burgs);
+        document.getElementById("manorsOutput").value = String(burgs);
+        window.lock("manors");
+      }
 
       window.mapName.value = header.label;
 
@@ -195,7 +210,7 @@ async function buildMap(page, bundleBytes, cells) {
         }
       };
     },
-    { bytes: Array.from(bundleBytes), cells }
+    { bytes: Array.from(bundleBytes), cells, burgs }
   );
 }
 
@@ -261,7 +276,7 @@ async function main() {
       // or the two generations race and the SVG ends up showing the other one.
       await page.waitForFunction(() => Boolean(window.mapId && window.Orogen && window.pack?.cells), null, { timeout: 120000 });
 
-      const { header, mapData, elapsed, stats } = await buildMap(page, bundleBytes, args.cells);
+      const { header, mapData, elapsed, stats } = await buildMap(page, bundleBytes, args.cells, args.burgs);
 
       const mapFile = path.join(args.out, `${name}.map`);
       fs.writeFileSync(mapFile, mapData);
@@ -271,6 +286,17 @@ async function main() {
           `, ${stats.cultures} cultures, ${stats.religions} religions`);
       log(`  box ${stats.mapCoordinates.latN}..${stats.mapCoordinates.latS} lat` +
           `, ${stats.mapCoordinates.lonW}..${stats.mapCoordinates.lonE} lon`);
+
+      // What a cell and a burg actually cover on the ground. The bundle knows the
+      // box's land area; everything else follows from it.
+      if (bundleHeader.area) {
+        const { boxKm2, landKm2 } = bundleHeader.area;
+        const perCell = boxKm2 / args.cells;
+        const perBurg = landKm2 / stats.burgs;
+        log(`  ${perCell.toFixed(0)} km² per grid cell (${Math.sqrt(perCell).toFixed(1)} km across)` +
+            `, ${Math.round(perBurg).toLocaleString()} km² of land per burg` +
+            ` (~${Math.sqrt(perBurg).toFixed(0)} km apart)`);
+      }
 
       if (args.screenshots) {
         await page.evaluate(() => {
