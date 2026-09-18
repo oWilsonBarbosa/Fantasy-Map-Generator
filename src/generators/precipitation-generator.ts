@@ -25,6 +25,13 @@ const MAX_PASSABLE_ELEVATION = 85;
 class PrecipitationModule {
   /** pass every wind over the cells it reaches, filling `grid.cells.prec` on the way */
   generate(): void {
+    // an imported planet brings its own simulated rainfall, from pressure-driven
+    // winds and orographic rain shadow rather than this model's straight passes
+    if (Orogen.isActive()) {
+      grid.cells.prec = Orogen.precipitation(grid);
+      return;
+    }
+
     const { cells, cellsX, cellsY } = grid;
     cells.prec = new Uint8Array(cells.i.length);
 

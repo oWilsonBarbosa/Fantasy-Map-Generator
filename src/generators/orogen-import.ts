@@ -1,0 +1,274 @@
+// Import a planet simulated by World Orogen instead of generating one.
+//
+// Orogen (orogen.studio) runs a tectonic and climate simulation on a sphere and
+// publishes the result per cell. An `.orogen` bundle carries that result already
+// rasterised into the four arrays FMG keeps per grid cell — height, temperature,
+// precipitation and biome — so the pipeline can skip its own heightmap, climate
+// and biome steps and run everything downstream (features, rivers, cultures,
+// burgs, states) on a simulated world rather than a procedural one.
+//
+// The bundle is produced by `tools/fmg-export/` in the Orogen dataset
+// repository, which also owns the mapping constants; this module only consumes
+// what the header declares.
+
+import type { GridGraph } from "@/types/GridGraph";
+import type { PackedGraph } from "@/types/PackedGraph";
+
+declare global {
+  var Orogen: OrogenModule;
+}
+
+const MAGIC = "OROGFMG1";
+const FORMAT = "orogen-fmg/1";
+
+type PlaneType = "u8" | "i8";
+
+interface PlaneSpec {
+  name: string;
+  type: PlaneType;
+  description?: string;
+}
+
+export interface OrogenHeader {
+  format: string;
+  planet: string;
+  seed: number;
+  crop: string;
+  label: string;
+  width: number;
+  height: number;
+  box: { latN: number; latS: number; lonW: number; lonE: number };
+  fmg: {
+    canvasWidth: number;
+    canvasHeight: number;
+    heightExponent: number;
+    mapSize: number;
+    latitude: number;
+    longitude: number;
+  };
+  planes: PlaneSpec[];
+  heightMapping?: string;
+  precipitation?: { mmPerUnit: number; scaleMm: number };
+}
+
+interface Planes {
+  height: Uint8Array;
+  temp: Int8Array;
+  prec: Uint8Array;
+  biome: Uint8Array;
+  koppen: Uint8Array;
+}
+
+/** per-grid-cell values, resampled from the bundle raster onto the current grid */
+interface Resampled {
+  cellsX: number;
+  cellsY: number;
+  height: Uint8Array;
+  temp: Int8Array;
+  prec: Uint8Array;
+  biome: Uint8Array;
+}
+
+async function gunzip(data: Uint8Array): Promise<Uint8Array> {
+  const stream = new Blob([data as BlobPart]).stream().pipeThrough(new DecompressionStream("gzip"));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+class OrogenModule {
+  private header: OrogenHeader | null = null;
+  private planes: Planes | null = null;
+  private resampled: Resampled | null = null;
+
+  /** decode a bundle; throws with a readable reason if it is not one */
+  async parse(buffer: ArrayBuffer): Promise<{ header: OrogenHeader; planes: Planes }> {
+    const bytes = new Uint8Array(buffer);
+    const magic = String.fromCharCode(...bytes.subarray(0, MAGIC.length));
+    if (magic !== MAGIC) throw new Error("Not an Orogen bundle");
+
+    const view = new DataView(buffer);
+    const headerLength = view.getUint32(MAGIC.length, true);
+    const headerStart = MAGIC.length + 4;
+    const header: OrogenHeader = JSON.parse(
+      new TextDecoder().decode(bytes.subarray(headerStart, headerStart + headerLength))
+    );
+    if (header.format !== FORMAT) throw new Error(`Unsupported bundle format ${header.format}, expected ${FORMAT}`);
+
+    const raw = await gunzip(bytes.subarray(headerStart + headerLength));
+    const payload = raw.buffer as ArrayBuffer;
+    const count = header.width * header.height;
+    const needed = count * header.planes.length; // every plane is one byte per pixel
+    if (raw.byteLength !== needed) {
+      throw new Error(`Bundle payload is ${raw.byteLength} bytes, its ${header.planes.length} planes need ${needed}`);
+    }
+
+    const planes = {} as Record<string, Uint8Array | Int8Array>;
+    let offset = 0;
+    for (const { name, type } of header.planes) {
+      const Ctor = type === "i8" ? Int8Array : Uint8Array;
+      planes[name] = new Ctor(payload, raw.byteOffset + offset, count);
+      offset += count;
+    }
+    for (const name of ["height", "temp", "prec", "biome"]) {
+      if (!planes[name]) throw new Error(`Bundle is missing the ${name} plane`);
+    }
+
+    return { header, planes: planes as unknown as Planes };
+  }
+
+  async load(buffer: ArrayBuffer): Promise<OrogenHeader> {
+    const { header, planes } = await this.parse(buffer);
+    this.header = header;
+    this.planes = planes;
+    this.resampled = null;
+    return header;
+  }
+
+  clear(): void {
+    this.header = null;
+    this.planes = null;
+    this.resampled = null;
+  }
+
+  isActive(): boolean {
+    return this.header !== null;
+  }
+
+  getHeader(): OrogenHeader | null {
+    return this.header;
+  }
+
+  /**
+   * Put the canvas and the map's place on the globe where the bundle says. The
+   * longitude span is not settable in FMG — it falls out of the canvas aspect
+   * (Coordinates.calculate) — so the canvas has to be applied too, not just the
+   * three option percentages.
+   */
+  applyOptions(): void {
+    if (!this.header) return;
+    const { canvasWidth, canvasHeight, heightExponent, mapSize, latitude, longitude } = this.header.fmg;
+
+    (document.getElementById("mapWidthInput") as HTMLInputElement).value = String(canvasWidth);
+    (document.getElementById("mapHeightInput") as HTMLInputElement).value = String(canvasHeight);
+
+    const exponentInput = document.getElementById("heightExponentInput") as HTMLInputElement;
+    exponentInput.value = String(heightExponent);
+    exponentInput.dispatchEvent(new Event("input", { bubbles: true }));
+
+    options.mapSize = mapSize;
+    options.latitude = latitude;
+    options.longitude = longitude;
+  }
+
+  /**
+   * Resample the bundle raster onto the current grid, box-averaging the
+   * continuous planes and taking the plurality of the categorical one. The
+   * bundle covers exactly the lat/lon box the map is placed on, so grid cell
+   * (x, y) maps straight onto the raster rectangle it spans.
+   */
+  private resample(graph: GridGraph): Resampled {
+    if (!this.header || !this.planes) throw new Error("No Orogen bundle is loaded");
+    if (this.resampled && this.resampled.cellsX === graph.cellsX && this.resampled.cellsY === graph.cellsY) {
+      return this.resampled;
+    }
+
+    const { width, height } = this.header;
+    const { cellsX, cellsY } = graph;
+    const count = cellsX * cellsY;
+    const out: Resampled = {
+      cellsX,
+      cellsY,
+      height: new Uint8Array(count),
+      temp: new Int8Array(count),
+      prec: new Uint8Array(count),
+      biome: new Uint8Array(count)
+    };
+
+    const votes = new Uint16Array(256);
+    for (let cy = 0; cy < cellsY; cy++) {
+      const y0 = Math.floor((cy * height) / cellsY);
+      const y1 = Math.max(y0 + 1, Math.floor(((cy + 1) * height) / cellsY));
+
+      for (let cx = 0; cx < cellsX; cx++) {
+        const x0 = Math.floor((cx * width) / cellsX);
+        const x1 = Math.max(x0 + 1, Math.floor(((cx + 1) * width) / cellsX));
+
+        let sumHeight = 0;
+        let sumTemp = 0;
+        let sumPrec = 0;
+        let samples = 0;
+        let topBiome = 0;
+        let topVotes = 0;
+
+        for (let y = y0; y < y1; y++) {
+          const row = y * width;
+          for (let x = x0; x < x1; x++) {
+            const k = row + x;
+            sumHeight += this.planes.height[k];
+            sumTemp += this.planes.temp[k];
+            sumPrec += this.planes.prec[k];
+            samples++;
+            const biome = this.planes.biome[k];
+            const seen = ++votes[biome];
+            if (seen > topVotes) {
+              topVotes = seen;
+              topBiome = biome;
+            }
+          }
+        }
+        for (let y = y0; y < y1; y++) {
+          const row = y * width;
+          for (let x = x0; x < x1; x++) votes[this.planes.biome[row + x]] = 0;
+        }
+
+        const i = cy * cellsX + cx;
+        out.height[i] = Math.round(sumHeight / samples);
+        out.temp[i] = Math.round(sumTemp / samples);
+        out.prec[i] = Math.round(sumPrec / samples);
+        out.biome[i] = topBiome;
+      }
+    }
+
+    this.resampled = out;
+    return out;
+  }
+
+  /** Orogen's relief, in place of a heightmap template */
+  heights(graph: GridGraph): Uint8Array {
+    return Uint8Array.from(this.resample(graph).height);
+  }
+
+  /** Orogen's simulated annual mean temperature, in place of FMG's latitude bands */
+  temperatures(graph: GridGraph): Int8Array {
+    return Int8Array.from(this.resample(graph).temp);
+  }
+
+  /** Orogen's simulated rainfall, in place of FMG's wind passes */
+  precipitation(graph: GridGraph): Uint8Array {
+    return Uint8Array.from(this.resample(graph).prec);
+  }
+
+  /**
+   * Replace the biomes FMG derived from its own matrix with the ones Orogen's
+   * published Köppen classes map to. FMG's wetlands are kept: they come from
+   * river flux, which Köppen has no class for, so they are extra information
+   * rather than a competing opinion.
+   */
+  applyBiomes(packGraph: PackedGraph, gridGraph: GridGraph): number {
+    if (!this.isActive()) return 0;
+    const { biome: orogenBiome } = this.resample(gridGraph);
+    const { biome, h, g } = packGraph.cells;
+
+    const WETLAND = 12;
+    let replaced = 0;
+    for (let cellId = 0; cellId < biome.length; cellId++) {
+      if (h[cellId] < 20 || biome[cellId] === WETLAND) continue;
+      const imported = orogenBiome[g[cellId]];
+      if (!imported || imported === biome[cellId]) continue;
+      biome[cellId] = imported;
+      replaced++;
+    }
+    return replaced;
+  }
+}
+
+window.Orogen = new OrogenModule();

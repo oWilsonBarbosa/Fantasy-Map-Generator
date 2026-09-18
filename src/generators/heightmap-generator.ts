@@ -551,7 +551,11 @@ class HeightmapModule {
   async generate(graph: GridGraph = grid, id: string = this.getSelectedId()): Promise<Uint8Array> {
     Math.random = Alea(seed); // reset PRNG
     const isTemplate = id in heightmapTemplates;
-    const heights = isTemplate ? this.fromTemplate(graph, id) : await this.fromPrecreated(graph, id);
+    const heights = Orogen.isActive()
+      ? Orogen.heights(graph)
+      : isTemplate
+        ? this.fromTemplate(graph, id)
+        : await this.fromPrecreated(graph, id);
 
     this.clearData();
     graph.cells.h = heights;

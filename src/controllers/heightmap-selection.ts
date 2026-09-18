@@ -1,4 +1,5 @@
 import { closeDialogs, confirmationDialog } from "@/components/dialog/dialog-helpers";
+import { tip } from "@/components/tooltips";
 import { heightmapTemplates } from "@/data/heightmap-templates";
 import { precreatedHeightmaps } from "@/data/precreated-heightmaps";
 import { drawHeights } from "@/renderers/draw-heightmap";
@@ -195,6 +196,11 @@ function insertHtml(): void {
           <div>
             <button data-tip="Open Template Editor" data-tool="templateEditor" id="heightmapSelectionEditTemplates">Edit Templates</button>
             <button data-tip="Open Image Converter" data-tool="imageConverter" id="heightmapSelectionImportHeightmap">Import Heightmap</button>
+            <button
+              data-tip="Load a planet simulated by World Orogen (.orogen bundle) — brings its relief, temperature, rainfall and Köppen biomes instead of generating them"
+              id="heightmapSelectionImportPlanet"
+            >Import Planet</button>
+            <input id="orogenBundleToLoad" type="file" accept=".orogen" style="display: none" />
           </div>
         </div>
       </section>
@@ -243,6 +249,7 @@ function addListeners(): void {
     const id = article.dataset.id;
     if (!id) return;
     if (target.matches("span.icon-cw")) regeneratePreview(article, id);
+    Orogen.clear(); // picking a template means generating a world, not importing one
     setSelected(id);
   });
 
@@ -255,6 +262,35 @@ function addListeners(): void {
   ensureEl("heightmapSelectionImportHeightmap").addEventListener("click", event =>
     confirmHeightmapEdit(event.currentTarget as HTMLElement)
   );
+  ensureEl("heightmapSelectionImportPlanet").addEventListener("click", () =>
+    ensureEl<HTMLInputElement>("orogenBundleToLoad").click()
+  );
+  ensureEl<HTMLInputElement>("orogenBundleToLoad").addEventListener("change", importPlanet);
+}
+
+async function importPlanet(this: HTMLInputElement): Promise<void> {
+  const file = this.files?.[0];
+  this.value = ""; // reset so re-picking the same file fires again
+  if (!file) return;
+
+  try {
+    const header = await Orogen.load(await file.arrayBuffer());
+    Orogen.applyOptions();
+
+    const name = header.label;
+    applyOption(ensureEl<HTMLInputElement>("templateInput"), header.crop, name);
+    lock("template");
+    ensureEl<HTMLInputElement>("mapName").value = name;
+    lock("mapName");
+
+    $("#heightmapSelection").dialog("close");
+    tip(`Imported ${name} from Orogen planet ${header.planet}`, false, "success", 5000);
+    regeneratePrompt({});
+  } catch (error) {
+    Orogen.clear();
+    ERROR && console.error(error);
+    tip(`Could not read the planet bundle: ${(error as Error).message}`, false, "error", 6000);
+  }
 }
 
 function getSelected(): string | undefined {

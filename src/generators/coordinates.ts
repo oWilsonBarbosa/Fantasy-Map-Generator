@@ -58,6 +58,8 @@ const RANDOM_SIZE: Record<string, [number, number, number, number]> = {
 class CoordinatesModule {
   /** define map size and position on the globe based on the heightmap template and a random factor */
   defineMapSize(): void {
+    if (Orogen.isActive()) return; // an imported planet is already placed on the globe by its bundle
+
     const [size, latitude, longitude] = this.getSizeAndPosition();
     const randomize = new URL(window.location.href).searchParams.get("options") === "default"; // ignore stored options
     if (randomize || !stored("mapSize")) options.mapSize = size;

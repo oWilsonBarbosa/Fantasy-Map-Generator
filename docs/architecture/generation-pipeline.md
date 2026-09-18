@@ -167,6 +167,19 @@ sync by hand. Differences, all deliberate:
 - Redrawing is not part of the pipeline: `finalizeHeightmap()` draws `ocean`, `landmass`, `lakes` and
   `coastline` after the mode handler returns, for all three modes.
 
+## Steps an imported planet takes over
+
+`GenerationPipeline` also runs when the world was simulated elsewhere. With an `.orogen` bundle
+loaded (see [`docs/domain/orogen-import.md`](../domain/orogen-import.md)), `Orogen.isActive()` is true
+and four steps read the bundle instead of computing: `heightmap` takes its relief, `temperatures` and
+`precipitation` take its simulated climate, `mapSize` is skipped because the bundle already placed the
+map on the globe, and `biomes` still runs `Biomes.define()` before `Orogen.applyBiomes()` overrules it
+from the imported Köppen classes.
+
+The step list does not change — no step is added, removed or reordered — so everything downstream sees
+the same globals it always does and needs no special case. That is deliberate: it is also why adding a
+step that writes `grid.cells.h/temp/prec` before `regraph` would silently fight the import.
+
 ## Paths that are not pipelines
 
 Three other places rebuild a large slice of a map by hand. They are not (yet) expressed as pipelines,

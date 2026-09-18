@@ -7,6 +7,13 @@ declare global {
 class TemperatureModule {
   /** calculate the temperature of every grid cell from its latitude and altitude */
   generate(): void {
+    // an imported planet brings its own simulated temperature, already accounting
+    // for altitude, continentality and ocean heat transport
+    if (Orogen.isActive()) {
+      grid.cells.temp = Orogen.temperatures(grid);
+      return;
+    }
+
     const { cells, cellsX, points } = grid;
     cells.temp = new Int8Array(cells.i.length);
 

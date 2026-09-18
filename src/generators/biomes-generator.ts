@@ -126,6 +126,10 @@ class BiomesGenerator {
       const temperature = temp[gridReference[cellId]];
       pack.cells.biome[cellId] = this.getId(moisture, temperature, height, Boolean(riverIds[cellId]));
     }
+
+    // an imported planet's own Köppen classes outrank this matrix, which has two
+    // axes where Köppen has thirty classes
+    Orogen.applyBiomes(pack, grid);
   }
 
   getId(moisture: number, temperature: number, height: number, hasRiver: boolean) {
