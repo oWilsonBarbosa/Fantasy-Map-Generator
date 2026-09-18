@@ -21,7 +21,8 @@
 - `public/`: Static assets and NON-MIGRATED JS Code in `public/modules`. `public/libs/` holds vendored third-party scripts for legacy code only — new `src/` code imports deps from npm (no `src/libs/`).
 - `electron/`: Main process, preload script and self-update of the desktop app; the renderer is the same `src/` build, served from the `app://` scheme.
 - `docs/`: Domain, architectural documentation and user-facing wiki.
-- `src/index.html`: **CAUTION**: A ~5.2K-line monolith. About half (`#defElements`, ~2.6K lines) is static SVG asset data — relief `<symbol>`s and fill `<pattern>`s; the UI proper is `#optionsContainer` + `#dialogs` (~2.2K lines). Also holds inline CSS filters and 41 `onX=` handlers bound to globals.
+- `src/index.html`: **CAUTION**: A ~2.6K-line monolith holding the UI structure (`#optionsContainer`, `#dialogs`), the `#map` `<defs>` with its CSS filters, and 41 `onX=` handlers bound to globals.
+- `src/def-elements.svg`: The `#defElements` sprite sheet — relief `<symbol>`s, fill `<pattern>`s, markers. A Vite plugin inlines it into `index.html` at build time: SVG `url(#id)` and `<use href="#id">` only resolve within one document, and consumers read it synchronously at boot, so it cannot be linked.
 - `tests/e2e/`: Playwright end-to-end tests. Never automatically run Playwright tests when developing.
 
 # FMG 2.0 Architecture Rules
