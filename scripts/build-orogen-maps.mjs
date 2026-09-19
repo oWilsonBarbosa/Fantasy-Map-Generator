@@ -36,7 +36,8 @@ function parseArgs(argv) {
     only: null,
     screenshots: true,
     reloadCheck: true,
-    burgs: null // null leaves FMG's "auto", which scales burgs to cells^0.2
+    burgs: null, // null leaves FMG's "auto", which scales burgs to cells^0.2
+    burgSpacing: null // km between burgs; sets the count per sheet from its land area
   };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--bundles") args.bundles = argv[++i];
@@ -46,6 +47,7 @@ function parseArgs(argv) {
     else if (argv[i] === "--no-screenshots") args.screenshots = false;
     else if (argv[i] === "--no-reload-check") args.reloadCheck = false;
     else if (argv[i] === "--burgs") args.burgs = +argv[++i];
+    else if (argv[i] === "--burg-spacing") args.burgSpacing = +argv[++i];
     else throw new Error(`unknown argument ${argv[i]}`);
   }
   return args;
@@ -235,16 +237,29 @@ async function main() {
   });
 
   const results = [];
+  const failures = [];
   try {
     for (const file of files) {
       const name = path.basename(file, ".orogen");
       const bundleBytes = fs.readFileSync(path.join(args.bundles, file));
       const bundleHeader = readHeader(bundleBytes);
 
+      // Burg count has to be per sheet: a fixed count would put towns 30 km apart
+      // on a small sheet and 120 km apart on a large one. Spacing is the thing
+      // that reads as realistic, so derive the count from each sheet's own land.
+      let burgs = args.burgs;
+      if (args.burgSpacing) {
+        const landKm2 = bundleHeader.area?.landKm2;
+        if (!landKm2) throw new Error(`${name} has no area.landKm2 — rebuild the bundle`);
+        burgs = Math.max(1, Math.round(landKm2 / args.burgSpacing ** 2));
+      }
+
       // Size the window to the map's own canvas so the whole map is on screen at
       // 1:1 — FMG only ever renders the part the current zoom fits, and its PNG
       // export inlines web fonts over the network, which an offline run cannot do.
-      const context = await browser.newContext({
+      let context;
+      try {
+      context = await browser.newContext({
         viewport: {
           width: Math.min(bundleHeader.fmg.canvasWidth, MAX_VIEWPORT),
           height: Math.min(bundleHeader.fmg.canvasHeight, MAX_VIEWPORT)
@@ -276,7 +291,7 @@ async function main() {
       // or the two generations race and the SVG ends up showing the other one.
       await page.waitForFunction(() => Boolean(window.mapId && window.Orogen && window.pack?.cells), null, { timeout: 120000 });
 
-      const { header, mapData, elapsed, stats } = await buildMap(page, bundleBytes, args.cells, args.burgs);
+      const { header, mapData, elapsed, stats } = await buildMap(page, bundleBytes, args.cells, burgs);
 
       const mapFile = path.join(args.out, `${name}.map`);
       fs.writeFileSync(mapFile, mapData);
@@ -341,6 +356,12 @@ async function main() {
       }
 
       results.push({ name, header, stats, bytes: mapData.length, errors: pageErrors.length });
+      } catch (error) {
+        // A long batch must not lose 60 finished sheets to one bad one.
+        log(`  FAILED: ${error.message.split("\n")[0]}`);
+        failures.push({ name, reason: error.message.split("\n")[0] });
+        await context?.close().catch(() => {});
+      }
     }
   } finally {
     await browser.close();
@@ -349,10 +370,12 @@ async function main() {
 
   const failed = results.filter(r => r.errors);
   log(`\n${results.length} maps written to ${args.out}`);
-  if (failed.length) {
-    log(`${failed.length} produced page errors: ${failed.map(r => r.name).join(", ")}`);
-    process.exit(1);
+  if (failures.length) {
+    log(`${failures.length} sheets failed outright:`);
+    for (const f of failures) log(`  ${f.name}: ${f.reason}`);
   }
+  if (failed.length) log(`${failed.length} produced page errors: ${failed.map(r => r.name).join(", ")}`);
+  if (failed.length || failures.length) process.exit(1);
 }
 
 main().catch(error => {
