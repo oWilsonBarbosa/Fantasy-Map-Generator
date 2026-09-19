@@ -69,6 +69,22 @@ as the three percentages — a bundle that only set the percentages would land o
 the wrong meridian. `heightExponent` comes from the header too, so the altitude
 readout reports the planet's real metres.
 
+### Ground scale
+
+Nothing in the Generator derives `distanceScale` from the lat/lon box; it is a
+standalone option that `randomizeOptions()` rolls from `gauss(3, 1, 1, 5)`. An
+imported planet left alone therefore gets a scale bar and distance readouts off
+by whatever came up. A degree of latitude is a constant length, so the box fixes
+it: `applyOptions()` sets `(latN - latS) × 111.32 / canvasHeight`, locks the
+option so the roll cannot overwrite it, lifts the slider's maximum when a
+whole-globe box needs more than its stock 20, and assigns the `distanceScale`
+global the readouts actually read.
+
+It also switches `distanceUnitInput` to `km`. The number carries no unit of its
+own — every readout pairs it with whatever that input says, and the Generator
+ships `mi` — so a km figure under a miles label makes the whole map read 1.61×
+too large. `areaUnit` is `square`, so it follows the same input.
+
 ## Producing `.map` files in bulk
 
 `scripts/build-orogen-maps.mjs` drives a real Generator in a headless browser

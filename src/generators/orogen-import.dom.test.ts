@@ -50,7 +50,8 @@ beforeEach(() => {
     <input id="mapWidthInput" value="960" />
     <input id="mapHeightInput" value="540" />
     <input id="heightExponentInput" value="2" />
-    <input id="distanceScaleInput" data-stored="distanceScale" value="3" max="20" />`;
+    <input id="distanceScaleInput" data-stored="distanceScale" value="3" max="20" />
+    <input id="distanceUnitInput" value="mi" />`;
   globalThis.options = { mapSize: 0, latitude: 0, longitude: 0 } as never;
   // the app shell (public/main.js) owns this global; stand it in for the test
   globalThis.distanceScale = 3;
@@ -103,6 +104,8 @@ test("applyOptions sets the ground scale from the box, not FMG's rolled default"
   expect(globalThis.distanceScale).toBeCloseTo(expected, 2);
   // locked, or randomizeOptions() rolls it again before the grid is built
   expect(localStorage.getItem("distanceScale")).toBe(String(applied));
+  // the number carries no unit; FMG's stock "mi" label would make it read 1.61x too large
+  expect((document.getElementById("distanceUnitInput") as HTMLInputElement).value).toBe("km");
 });
 
 test("a whole-globe box lifts the slider's maximum rather than clamping to it", async () => {

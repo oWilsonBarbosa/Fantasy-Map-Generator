@@ -173,6 +173,16 @@ class OrogenModule {
     }
     distanceScale = kmPerPixel; // the global the scale bar and every readout use
 
+    // distanceScale carries no unit of its own — every readout pairs it with
+    // whatever this input says, and FMG ships "mi". Left alone, a km figure gets
+    // a miles label and the whole map reads 1.61x too large. areaUnit is
+    // "square", so it follows this one.
+    const unitInput = document.getElementById("distanceUnitInput") as HTMLInputElement | null;
+    if (unitInput && unitInput.value !== "km") {
+      unitInput.value = "km";
+      unitInput.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+
     options.mapSize = mapSize;
     options.latitude = latitude;
     options.longitude = longitude;
