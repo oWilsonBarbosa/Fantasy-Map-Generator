@@ -26,6 +26,7 @@ changes for an ordinary map.
 | `temperatures` | `Orogen.temperatures()`: simulated annual mean °C, altitude and continentality already in it |
 | `precipitation` | `Orogen.precipitation()`: simulated rainfall, instead of this model's straight wind passes |
 | `biomes` | `Biomes.define()` runs as usual, then `Orogen.applyBiomes()` overrules it from the imported Köppen classes |
+| `rivers` | `Lakes.detectCloseLakes()` runs as usual, then `Orogen.markClosedLakes()` overrules which lakes are terminal |
 
 Every other step is untouched. That is the point: `Rivers` reads
 `grid.cells.prec`, `Population.rankCells` and `Cultures` read biome habitability
@@ -35,6 +36,29 @@ the whole downstream world without special-casing any of it.
 Wetlands are the one biome we keep against the import. FMG derives them from
 river flux, which Köppen has no class for, so they are extra information rather
 than a competing opinion.
+
+### Closed-basin lakes
+
+A bundle may carry the footprints of the closed basins its source settled, burned
+into the height plane as water and flagged in a `lake` plane. Both are needed.
+The height alone puts the water in the right place, but this generator re-derives
+whether a lake is terminal, and it does so from terrain: `detectCloseLakes` walks
+out from a lake's lowest shore over anything below `feature.height +
+lakeElevationLimit` looking for the ocean, and `Lakes.getHeight` takes that
+height from the shoreline — so the walk's budget grows with the lake's altitude,
+and a high rimmed interior basin is the case it most readily calls open. Scored
+across 66 imported sheets, terminal lakes derived that way had a Spearman ρ of
+−0.08 against aridity; the source's own had +0.61 over the same boxes.
+
+`Orogen.markClosedLakes()` therefore sets `feature.closed` from the plane, after
+`detectCloseLakes` and before `Lakes.defineClimateData()` — which is what reads
+`closed` to decide whether an outlet may form. It claims a lake only when more
+than half of its cells sit on the mask, because the resampled mask is wider than
+the water that survived the height average and a neighbouring lake of this
+generator's own would otherwise be swept in.
+
+This generator still creates its own lakes by flooding depressions; only which
+ones are terminal is imported.
 
 ## The bundle
 
@@ -47,8 +71,10 @@ payload     gzip of every plane concatenated in header.planes order
 
 Inflated with `DecompressionStream`, so no library is needed. Planes are one byte
 per pixel: `height` (`grid.cells.h` scale, 20 = sea level), `temp` (signed °C),
-`prec` (`grid.cells.prec` moisture units), `biome` (our biome ids) and `koppen`
-(the source classification, carried so the bundle is self-describing).
+`prec` (`grid.cells.prec` moisture units), `biome` (our biome ids), `koppen`
+(the source classification, carried so the bundle is self-describing) and
+`lake` (1 where a closed basin was burned in). Only `lake` is optional — a
+bundle without it loads, and lake classification is left alone.
 
 The raster is resampled onto whatever grid the current cell-density setting
 produces — continuous planes box-averaged, biomes by plurality, so a coarse grid

@@ -397,6 +397,9 @@ class RiverModule {
 
     const h = this.alterHeights();
     Lakes.detectCloseLakes(h);
+    // an imported planet settled which basins are terminal with a real water
+    // balance; detectCloseLakes only asked the terrain
+    Orogen.markClosedLakes(pack, grid);
     this.resolveDepressions(h);
     drainWater();
     defineRivers();

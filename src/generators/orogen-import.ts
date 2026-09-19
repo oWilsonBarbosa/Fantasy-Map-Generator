@@ -60,6 +60,8 @@ interface Planes {
   prec: Uint8Array;
   biome: Uint8Array;
   koppen: Uint8Array;
+  /** optional: 1 where the bundle burned in a closed-basin lake */
+  lake?: Uint8Array;
 }
 
 /** per-grid-cell values, resampled from the bundle raster onto the current grid */
@@ -70,6 +72,7 @@ interface Resampled {
   temp: Int8Array;
   prec: Uint8Array;
   biome: Uint8Array;
+  lake: Uint8Array;
 }
 
 async function gunzip(data: Uint8Array): Promise<Uint8Array> {
@@ -216,9 +219,11 @@ class OrogenModule {
       height: new Uint8Array(count),
       temp: new Int8Array(count),
       prec: new Uint8Array(count),
-      biome: new Uint8Array(count)
+      biome: new Uint8Array(count),
+      lake: new Uint8Array(count)
     };
 
+    const lakePlane = this.planes.lake;
     const votes = new Uint16Array(256);
     for (let cy = 0; cy < cellsY; cy++) {
       const y0 = Math.floor((cy * height) / cellsY);
@@ -232,6 +237,7 @@ class OrogenModule {
         let sumTemp = 0;
         let sumPrec = 0;
         let samples = 0;
+        let lakeSamples = 0;
         let topBiome = 0;
         let topVotes = 0;
 
@@ -242,6 +248,7 @@ class OrogenModule {
             sumHeight += this.planes.height[k];
             sumTemp += this.planes.temp[k];
             sumPrec += this.planes.prec[k];
+            if (lakePlane?.[k]) lakeSamples++;
             samples++;
             const biome = this.planes.biome[k];
             const seen = ++votes[biome];
@@ -261,6 +268,10 @@ class OrogenModule {
         out.temp[i] = Math.round(sumTemp / samples);
         out.prec[i] = Math.round(sumPrec / samples);
         out.biome[i] = topBiome;
+        // any sample is enough: a burned lake is a minority of its cell wherever
+        // it is being eroded by the average, which is exactly where the flag has
+        // to survive for the lake to still be recognised as closed
+        out.lake[i] = lakeSamples ? 1 : 0;
       }
     }
 
@@ -281,6 +292,56 @@ class OrogenModule {
   /** Orogen's simulated rainfall, in place of FMG's wind passes */
   precipitation(graph: GridGraph): Uint8Array {
     return Uint8Array.from(this.resample(graph).prec);
+  }
+
+  /**
+   * Mark the lakes the bundle burned in as closed, overriding the terrain test.
+   *
+   * `Lakes.detectCloseLakes` decides closure by walking outward from a lake's
+   * lowest shore over anything below `feature.height + lakeElevationLimit`,
+   * looking for the ocean. `Lakes.getHeight` takes that height from the
+   * shoreline, so the walk's budget grows with the lake's altitude and a high
+   * rimmed interior basin — the textbook endorheic case — is the one it most
+   * readily calls open. It is also a test about terrain, not climate, which is
+   * why FMG's terminal lakes carry no signal about aridity.
+   *
+   * The bundle's `lake` plane is not an opinion about terrain. It is the result
+   * of the dataset's own water balance: inflow accumulated over the whole basin
+   * against evaporation over the flooded area, with the lake trimmed back to
+   * what that balance sustains. Where the two disagree, the bundle wins.
+   *
+   * Call after `Lakes.detectCloseLakes` and before `Lakes.defineClimateData`,
+   * which is what reads `closed` to decide whether an outlet may form.
+   */
+  markClosedLakes(packGraph: PackedGraph, gridGraph: GridGraph): number {
+    if (!this.isActive() || !this.planes?.lake) return 0;
+    const { lake } = this.resample(gridGraph);
+    const { f, g } = packGraph.cells;
+
+    // A grid cell counts as burned if any of its raster samples was, so the mask
+    // is wider than the water that survived the height average. That is what
+    // makes an eroded lake still findable, and it is also why a lake has to be
+    // mostly over the mask to be claimed: touching it is what a neighbouring
+    // lake of FMG's own does.
+    const OWNED = 0.5;
+    const total = new Uint32Array(packGraph.features.length);
+    const burned = new Uint32Array(packGraph.features.length);
+    for (let cellId = 0; cellId < f.length; cellId++) {
+      const featureId = f[cellId];
+      if (!featureId || featureId >= total.length) continue;
+      total[featureId]++;
+      if (lake[g[cellId]]) burned[featureId]++;
+    }
+
+    let marked = 0;
+    for (const feature of packGraph.features) {
+      if (!feature || feature.type !== "lake") continue;
+      const cells = total[feature.i];
+      if (!cells || burned[feature.i] / cells < OWNED) continue;
+      feature.closed = true;
+      marked++;
+    }
+    return marked;
   }
 
   /**

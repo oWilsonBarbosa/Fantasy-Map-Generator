@@ -164,6 +164,52 @@ describe("Orogen import", () => {
     expect(Array.from(pack.cells.biome)).toEqual([5]);
   });
 
+  describe("closed-basin lakes", () => {
+    const WITH_LAKE = [...PLANES, { name: "lake", type: "u8" }];
+    // raster pixel 1 is the burned lake; everything else is untouched
+    const LAKE = [0, 1, 0, 0, 0, 0, 0, 0];
+
+    /** two lake features: lake 1 sits on the burned pixel, lake 2 does not */
+    const packWithLakes = () =>
+      ({
+        features: [0, { i: 1, type: "lake" }, { i: 2, type: "lake" }, { i: 3, type: "ocean" }],
+        cells: {
+          //      lake 1  lake 1  lake 2  ocean
+          f: Uint16Array.from([1, 1, 2, 3]),
+          g: [1, 1, 2, 3]
+        }
+      }) as any;
+
+    it("marks a lake sitting on the burned mask as closed", async () => {
+      await Orogen.load(makeBundle(makeHeader({ planes: WITH_LAKE }), { height: HEIGHTS, lake: LAKE }));
+      const pack = packWithLakes();
+
+      expect(Orogen.markClosedLakes(pack, gridOf(4, 2))).toBe(1);
+      expect(pack.features[1].closed).toBe(true);
+      // FMG's own lake keeps whatever detectCloseLakes decided about it
+      expect(pack.features[2].closed).toBeUndefined();
+    });
+
+    it("leaves a lake that merely touches the mask alone", async () => {
+      await Orogen.load(makeBundle(makeHeader({ planes: WITH_LAKE }), { height: HEIGHTS, lake: LAKE }));
+      const pack = packWithLakes();
+      // one of lake 2's four cells overlaps the burned grid cell — under half
+      pack.cells.f = Uint16Array.from([1, 2, 2, 2]);
+      pack.cells.g = [1, 1, 2, 3];
+
+      expect(Orogen.markClosedLakes(pack, gridOf(4, 2))).toBe(1);
+      expect(pack.features[1].closed).toBe(true);
+      expect(pack.features[2].closed).toBeUndefined();
+    });
+
+    it("does nothing for a bundle with no lake plane", async () => {
+      await Orogen.load(makeBundle(makeHeader(), { height: HEIGHTS }));
+      const pack = packWithLakes();
+      expect(Orogen.markClosedLakes(pack, gridOf(4, 2))).toBe(0);
+      expect(pack.features[1].closed).toBeUndefined();
+    });
+  });
+
   it("forgets everything on clear", async () => {
     await Orogen.load(makeBundle(makeHeader(), { height: HEIGHTS }));
     Orogen.clear();
