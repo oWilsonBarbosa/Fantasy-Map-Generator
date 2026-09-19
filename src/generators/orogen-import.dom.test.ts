@@ -49,8 +49,12 @@ beforeEach(() => {
   document.body.innerHTML = /* html */ `
     <input id="mapWidthInput" value="960" />
     <input id="mapHeightInput" value="540" />
-    <input id="heightExponentInput" value="2" />`;
+    <input id="heightExponentInput" value="2" />
+    <input id="distanceScaleInput" data-stored="distanceScale" value="3" max="20" />`;
   globalThis.options = { mapSize: 0, latitude: 0, longitude: 0 } as never;
+  // the app shell (public/main.js) owns this global; stand it in for the test
+  globalThis.distanceScale = 3;
+  localStorage.removeItem("distanceScale");
   window.Orogen.clear();
 });
 
@@ -82,4 +86,37 @@ test("the applied placement reproduces the bundle's lat/lon box", async () => {
   expect(latN - latT).toBeCloseTo(header.box.latS, 1);
   expect(lonE).toBeCloseTo(header.box.lonE, 0);
   expect(lonE - lonT).toBeCloseTo(header.box.lonW, 0);
+});
+
+test("applyOptions sets the ground scale from the box, not FMG's rolled default", async () => {
+  await window.Orogen.load(await makeBundle());
+  window.Orogen.applyOptions();
+
+  // 89.9138° of latitude over a 1295 px canvas at 111.32 km per degree
+  const expected = ((header.box.latN - header.box.latS) * 111.32) / header.fmg.canvasHeight;
+  const applied = Number((document.getElementById("distanceScaleInput") as HTMLInputElement).value);
+
+  expect(applied).toBeCloseTo(expected, 2);
+  expect(applied).not.toBe(3); // the stock default, which would put every scale bar wrong
+  expect(window.Orogen.getDistanceScale()).toBeCloseTo(expected, 2);
+  // the global is what prepareMapData() serialises and the scale bar reads
+  expect(globalThis.distanceScale).toBeCloseTo(expected, 2);
+  // locked, or randomizeOptions() rolls it again before the grid is built
+  expect(localStorage.getItem("distanceScale")).toBe(String(applied));
+});
+
+test("a whole-globe box lifts the slider's maximum rather than clamping to it", async () => {
+  const globe = {
+    ...header,
+    box: { latN: 90, latS: -90, lonW: -180, lonE: 180 },
+    fmg: { ...header.fmg, canvasWidth: 1920, canvasHeight: 960 }
+  };
+  const saved = JSON.stringify(header);
+  Object.assign(header, globe);
+  await window.Orogen.load(await makeBundle());
+  Object.assign(header, JSON.parse(saved));
+
+  window.Orogen.applyOptions();
+  // 180 x 111.32 / 960 = 20.87, past the stock max of 20
+  expect(Number((document.getElementById("distanceScaleInput") as HTMLInputElement).value)).toBeCloseTo(20.87, 1);
 });

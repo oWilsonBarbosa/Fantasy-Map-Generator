@@ -19,7 +19,8 @@ if (typeof document === "undefined") {
     readyState: "complete",
     addEventListener: () => {},
     getElementById: () => null,
-    querySelector: () => null
+    querySelector: () => null,
+    querySelectorAll: () => [] // utils/preferences wires lock icons at module load
   };
 }
 

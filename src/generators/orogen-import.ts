@@ -13,12 +13,15 @@
 
 import type { GridGraph } from "@/types/GridGraph";
 import type { PackedGraph } from "@/types/PackedGraph";
+import { rn } from "@/utils";
+import { lock } from "@/utils/preferences";
 
 declare global {
   var Orogen: OrogenModule;
 }
 
 const MAGIC = "OROGFMG1";
+const KM_PER_DEGREE = 111.32; // one degree of latitude, the one distance that does not vary
 const FORMAT = "orogen-fmg/1";
 
 type PlaneType = "u8" | "i8";
@@ -154,9 +157,32 @@ class OrogenModule {
     exponentInput.value = String(heightExponent);
     exponentInput.dispatchEvent(new Event("input", { bubbles: true }));
 
+    // Ground scale is not derived from the lat/lon box anywhere in FMG — it is a
+    // standalone option that randomizeOptions() rolls. Left alone, an imported
+    // planet gets a scale bar and distance readouts off by whatever it rolled.
+    // A degree of latitude is a constant length, so the box's height fixes it.
+    const kmPerPixel = rn(((this.header.box.latN - this.header.box.latS) * KM_PER_DEGREE) / canvasHeight, 3);
+    const scaleInput = document.getElementById("distanceScaleInput") as HTMLInputElement;
+    if (scaleInput) {
+      // a whole-globe map needs ~21 km/px, past the slider's stock maximum
+      if (Number(scaleInput.max) < kmPerPixel) scaleInput.max = String(Math.ceil(kmPerPixel));
+      scaleInput.value = String(kmPerPixel);
+      // Locking matters as much as setting: randomizeOptions() rolls an unlocked
+      // distanceScale from gauss(3, 1, 1, 5), and it runs after this.
+      lock("distanceScale");
+    }
+    distanceScale = kmPerPixel; // the global the scale bar and every readout use
+
     options.mapSize = mapSize;
     options.latitude = latitude;
     options.longitude = longitude;
+  }
+
+  /** km per map pixel the bundle implies — exposed so the value can be asserted */
+  getDistanceScale(): number | null {
+    if (!this.header) return null;
+    const { box, fmg } = this.header;
+    return rn(((box.latN - box.latS) * KM_PER_DEGREE) / fmg.canvasHeight, 3);
   }
 
   /**

@@ -37,7 +37,14 @@ function parseArgs(argv) {
     screenshots: true,
     reloadCheck: true,
     burgs: null, // null leaves FMG's "auto", which scales burgs to cells^0.2
-    burgSpacing: null // km between burgs; sets the count per sheet from its land area
+    burgSpacing: null, // km between burgs; sets the count per sheet from its land area
+    // Physical by default: this atlas maps a planet whose societies are not yet
+    // invented, so FMG's generated kingdoms would be noise on the page.
+    preset: "physical",
+    // "bright" (FMG's default) is a spectral ramp; "natural" is a hypsometric
+    // white-tan-green-teal much closer to how Orogen renders relief.
+    scheme: "natural",
+    politics: false // true brings back states and burgs, which this atlas does not want drawn
   };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--bundles") args.bundles = argv[++i];
@@ -48,6 +55,10 @@ function parseArgs(argv) {
     else if (argv[i] === "--no-reload-check") args.reloadCheck = false;
     else if (argv[i] === "--burgs") args.burgs = +argv[++i];
     else if (argv[i] === "--burg-spacing") args.burgSpacing = +argv[++i];
+    else if (argv[i] === "--preset") args.preset = argv[++i];
+    else if (argv[i] === "--no-politics") args.politics = false;
+    else if (argv[i] === "--politics") args.politics = true;
+    else if (argv[i] === "--scheme") args.scheme = argv[++i];
     else throw new Error(`unknown argument ${argv[i]}`);
   }
   return args;
@@ -142,9 +153,9 @@ async function startPreview() {
 }
 
 /** Everything below runs inside the page, against the real app globals. */
-async function buildMap(page, bundleBytes, cells, burgs) {
+async function buildMap(page, bundleBytes, cells, burgs, preset, politics, scheme) {
   return page.evaluate(
-    async ({ bytes, cells, burgs }) => {
+    async ({ bytes, cells, burgs, preset, politics, scheme }) => {
       const buffer = new Uint8Array(bytes).buffer;
       const header = await window.Orogen.load(buffer);
       window.Orogen.applyOptions();
@@ -173,6 +184,19 @@ async function buildMap(page, bundleBytes, cells, burgs) {
         window.lock("manors");
       }
 
+      // With no capitals there are no states, and with no towns no burgs, so the
+      // whole political half of the pipeline runs over an empty set. The physical
+      // layers — rivers, lakes, ice, biomes — are untouched.
+      if (!politics) {
+        const statesNumber = document.getElementById("statesNumber");
+        statesNumber.value = "0";
+        window.lock("statesNumber");
+        const manorsInput = document.getElementById("manorsInput");
+        manorsInput.value = "0";
+        document.getElementById("manorsOutput").value = "0";
+        window.lock("manors");
+      }
+
       window.mapName.value = header.label;
 
       const bootMapId = window.mapId;
@@ -181,6 +205,13 @@ async function buildMap(page, bundleBytes, cells, burgs) {
       // until the layers are redrawn, which is what regenerateMap() does around it.
       window.undraw();
       await window.generate({});
+      // the relief ramp lives in the style, not the layer preset
+      if (scheme) {
+        window.styles.heightmap.landHeights.options.scheme = scheme;
+        window.styles.heightmap.oceanHeights.options.scheme = scheme;
+      }
+      // applyLayersPreset reads the stored preset name, set in the init script
+      window.applyLayersPreset();
       window.Layers.drawAll();
       window.fitMapToScreen();
       const elapsed = Math.round(performance.now() - started);
@@ -212,7 +243,7 @@ async function buildMap(page, bundleBytes, cells, burgs) {
         }
       };
     },
-    { bytes: Array.from(bundleBytes), cells, burgs }
+    { bytes: Array.from(bundleBytes), cells, burgs, preset, politics, scheme }
   );
 }
 
@@ -280,18 +311,19 @@ async function main() {
 
       log(`\n${name}:`);
       // pre-seed the version so the "Generator is updated" dialog never opens over the map
-      await page.addInitScript(() => {
+      await page.addInitScript(name => {
         try {
           localStorage.setItem("version", "999.0.0");
           localStorage.setItem("disable_click_arrow_tooltip", "true");
+          localStorage.setItem("preset", name);
         } catch {}
-      });
+      }, args.preset);
       await page.goto(PREVIEW_URL, { waitUntil: "load" });
       // The app generates a random map on boot. Let that finish before importing,
       // or the two generations race and the SVG ends up showing the other one.
       await page.waitForFunction(() => Boolean(window.mapId && window.Orogen && window.pack?.cells), null, { timeout: 120000 });
 
-      const { header, mapData, elapsed, stats } = await buildMap(page, bundleBytes, args.cells, burgs);
+      const { header, mapData, elapsed, stats } = await buildMap(page, bundleBytes, args.cells, burgs, args.preset, args.politics, args.scheme);
 
       const mapFile = path.join(args.out, `${name}.map`);
       fs.writeFileSync(mapFile, mapData);
@@ -307,10 +339,11 @@ async function main() {
       if (bundleHeader.area) {
         const { boxKm2, landKm2 } = bundleHeader.area;
         const perCell = boxKm2 / args.cells;
-        const perBurg = landKm2 / stats.burgs;
-        log(`  ${perCell.toFixed(0)} km² per grid cell (${Math.sqrt(perCell).toFixed(1)} km across)` +
-            `, ${Math.round(perBurg).toLocaleString()} km² of land per burg` +
-            ` (~${Math.sqrt(perBurg).toFixed(0)} km apart)`);
+        const density = stats.burgs
+          ? `, ${Math.round(landKm2 / stats.burgs).toLocaleString()} km² of land per burg` +
+            ` (~${Math.sqrt(landKm2 / stats.burgs).toFixed(0)} km apart)`
+          : ", no burgs";
+        log(`  ${perCell.toFixed(0)} km² per grid cell (${Math.sqrt(perCell).toFixed(1)} km across)${density}`);
       }
 
       if (args.screenshots) {
