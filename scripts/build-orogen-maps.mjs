@@ -46,6 +46,7 @@ function parseArgs(argv) {
     // white-tan-green-teal much closer to how Orogen renders relief.
     scheme: "natural",
     port: 4173,
+    lakeLimit: null, // FMG's lakeElevationLimit: rim height, in height bytes, that closes a basin
     politics: false // true brings back states and burgs, which this atlas does not want drawn
   };
   for (let i = 0; i < argv.length; i++) {
@@ -62,6 +63,7 @@ function parseArgs(argv) {
     else if (argv[i] === "--politics") args.politics = true;
     else if (argv[i] === "--scheme") args.scheme = argv[++i];
     else if (argv[i] === "--port") args.port = +argv[++i];
+    else if (argv[i] === "--lake-limit") args.lakeLimit = +argv[++i];
     else throw new Error(`unknown argument ${argv[i]}`);
   }
   return args;
@@ -156,9 +158,9 @@ async function startPreview(port) {
 }
 
 /** Everything below runs inside the page, against the real app globals. */
-async function buildMap(page, bundleBytes, cells, burgs, preset, politics, scheme) {
+async function buildMap(page, bundleBytes, cells, burgs, preset, politics, scheme, lakeLimit) {
   return page.evaluate(
-    async ({ bytes, cells, burgs, preset, politics, scheme }) => {
+    async ({ bytes, cells, burgs, preset, politics, scheme, lakeLimit }) => {
       const buffer = new Uint8Array(bytes).buffer;
       const header = await window.Orogen.load(buffer);
       window.Orogen.applyOptions();
@@ -198,6 +200,17 @@ async function buildMap(page, bundleBytes, cells, burgs, preset, politics, schem
         manorsInput.value = "0";
         document.getElementById("manorsOutput").value = "0";
         window.lock("manors");
+      }
+
+      // Grid.addDeepDepressionLakes treats this as a RELATIVE rim height: a basin
+      // is closed only if escaping it means climbing more than this many height
+      // bytes above its floor. Lower keeps shallow basins; 80 disables lakes.
+      if (lakeLimit !== null) {
+        for (const id of ["lakeElevationLimitInput", "lakeElevationLimitOutput"]) {
+          const el = document.getElementById(id);
+          if (el) el.value = String(lakeLimit);
+        }
+        window.lock("lakeElevationLimit");
       }
 
       window.mapName.value = header.label;
@@ -246,7 +259,7 @@ async function buildMap(page, bundleBytes, cells, burgs, preset, politics, schem
         }
       };
     },
-    { bytes: Array.from(bundleBytes), cells, burgs, preset, politics, scheme }
+    { bytes: Array.from(bundleBytes), cells, burgs, preset, politics, scheme, lakeLimit }
   );
 }
 
@@ -327,7 +340,7 @@ async function main() {
       // or the two generations race and the SVG ends up showing the other one.
       await page.waitForFunction(() => Boolean(window.mapId && window.Orogen && window.pack?.cells), null, { timeout: 120000 });
 
-      const { header, mapData, elapsed, stats } = await buildMap(page, bundleBytes, args.cells, burgs, args.preset, args.politics, args.scheme);
+      const { header, mapData, elapsed, stats } = await buildMap(page, bundleBytes, args.cells, burgs, args.preset, args.politics, args.scheme, args.lakeLimit);
 
       const mapFile = path.join(args.out, `${name}.map`);
       fs.writeFileSync(mapFile, mapData);
