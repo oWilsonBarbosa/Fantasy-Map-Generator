@@ -16,7 +16,8 @@ import { fileURLToPath } from "node:url";
 import { chromium } from "@playwright/test";
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
-const PREVIEW_URL = "http://localhost:4173";
+// set per run so two batches can work side by side without fighting over a port
+let previewUrl = "http://localhost:4173";
 const MAX_VIEWPORT = 2600; // a window big enough for any crop's canvas without absurd memory
 const log = (...a) => console.log(...a);
 
@@ -44,6 +45,7 @@ function parseArgs(argv) {
     // "bright" (FMG's default) is a spectral ramp; "natural" is a hypsometric
     // white-tan-green-teal much closer to how Orogen renders relief.
     scheme: "natural",
+    port: 4173,
     politics: false // true brings back states and burgs, which this atlas does not want drawn
   };
   for (let i = 0; i < argv.length; i++) {
@@ -59,6 +61,7 @@ function parseArgs(argv) {
     else if (argv[i] === "--no-politics") args.politics = false;
     else if (argv[i] === "--politics") args.politics = true;
     else if (argv[i] === "--scheme") args.scheme = argv[++i];
+    else if (argv[i] === "--port") args.port = +argv[++i];
     else throw new Error(`unknown argument ${argv[i]}`);
   }
   return args;
@@ -78,7 +81,7 @@ async function checkReload(browser, mapFile, expected) {
     } catch {}
   });
   try {
-    await page.goto(PREVIEW_URL, { waitUntil: "load" });
+    await page.goto(previewUrl, { waitUntil: "load" });
     await page.waitForFunction(() => Boolean(window.mapId && window.pack?.cells), null, { timeout: 120000 });
 
     await page.setInputFiles("#mapToLoad", mapFile);
@@ -100,13 +103,13 @@ async function checkReload(browser, mapFile, expected) {
   }
 }
 
-async function startPreview() {
+async function startPreview(port) {
   // --strictPort so a leftover preview from an earlier run cannot quietly serve a
   // stale dist on the port we then navigate to.
   // detached so the whole process group can be killed: signalling the spawned
   // wrapper alone leaves the real server running and holding the port, which then
   // keeps this process alive forever and serves a stale dist to the next run.
-  const server = spawn("npx", ["vite", "preview", "--port", "4173", "--strictPort"], {
+  const server = spawn("npx", ["vite", "preview", "--port", String(port), "--strictPort"], {
     cwd: ROOT,
     stdio: ["ignore", "pipe", "pipe"],
     detached: true
@@ -133,8 +136,8 @@ async function startPreview() {
       };
       const onData = data => {
         const text = data.toString();
-        if (/is in use|EADDRINUSE/.test(text)) return fail("port 4173 is already in use — stop the other preview first");
-        if (text.includes(PREVIEW_URL)) {
+        if (/is in use|EADDRINUSE/.test(text)) return fail(`port ${port} is already in use — pass --port to run beside another batch`);
+        if (text.includes(previewUrl)) {
           clearTimeout(timer);
           resolve();
         }
@@ -259,8 +262,9 @@ async function main() {
 
   fs.mkdirSync(args.out, { recursive: true });
 
-  log(`starting vite preview...`);
-  const preview = await startPreview();
+  log(`starting vite preview on ${args.port}...`);
+  previewUrl = `http://localhost:${args.port}`;
+  const preview = await startPreview(args.port);
 
   const browser = await chromium.launch({
     executablePath: process.env.CHROMIUM_PATH || "/opt/pw-browsers/chromium",
@@ -318,7 +322,7 @@ async function main() {
           localStorage.setItem("preset", name);
         } catch {}
       }, args.preset);
-      await page.goto(PREVIEW_URL, { waitUntil: "load" });
+      await page.goto(previewUrl, { waitUntil: "load" });
       // The app generates a random map on boot. Let that finish before importing,
       // or the two generations race and the SVG ends up showing the other one.
       await page.waitForFunction(() => Boolean(window.mapId && window.Orogen && window.pack?.cells), null, { timeout: 120000 });
