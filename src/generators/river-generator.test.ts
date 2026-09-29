@@ -160,3 +160,67 @@ describe("RiverModule helpers", () => {
     });
   });
 });
+
+// River flux is accumulated rainfall, so a basin's total scales with how many cells it holds.
+// At the stock 100K cells the very largest rivers already gather more than 65,535, and
+// pack.cells.fl used to be a Uint16Array: the total wrapped, and a trunk river read as a
+// trickle from that point down to its mouth.
+describe("flux accumulation", () => {
+  const LAND = 400; // cells in the chain, summit down to the coast
+  const PRECIPITATION = 200; // per cell, so the mouth gathers 80,000 — past the 16-bit ceiling
+
+  // One river's worth of land: cell 0 is the sea, cells 1..LAND climb inland from it, so
+  // every cell drains to the one below and the mouth collects the whole chain.
+  function buildChain() {
+    const n = LAND + 1;
+    const cells = {
+      i: Array.from({ length: n }, (_, cell) => cell),
+      h: Float32Array.from({ length: n }, (_, cell) => (cell === 0 ? 10 : 20.5 + cell * 0.1)),
+      t: new Uint8Array(n), // zero, so alterHeights leaves the heights as given
+      b: new Uint8Array(n),
+      haven: new Uint32Array(n), // none, so each cell drains to its lowest neighbour
+      g: Uint32Array.from({ length: n }, (_, cell) => cell),
+      f: Uint16Array.from({ length: n }, (_, cell) => (cell === 0 ? 1 : 2)),
+      c: Array.from({ length: n }, (_, cell) => [cell - 1, cell + 1].filter(other => other >= 0 && other < n)),
+      p: Array.from({ length: n }, (_, cell) => [cell * 4, 50])
+    };
+    return { cells, n };
+  }
+
+  beforeEach(async () => {
+    const { cells, n } = buildChain();
+    globalThis.TIME = false;
+    globalThis.window = globalThis.window || ({} as any);
+    (globalThis as any).seed = "1";
+    (globalThis as any).graphWidth = 2000;
+    (globalThis as any).graphHeight = 100;
+    (globalThis as any).pointsInput = { dataset: { cells: "10000" } }; // a modifier of exactly 1
+    (globalThis as any).grid = { cells: { prec: new Uint8Array(n).fill(PRECIPITATION) } };
+    (globalThis as any).Lakes = {
+      detectCloseLakes: () => {},
+      defineClimateData: () => new Uint16Array(n),
+      cleanupLakeData: () => {}
+    };
+    (globalThis as any).Orogen = { markClosedLakes: () => 0 };
+    globalThis.pack = { cells, features: [0, { i: 1, type: "ocean" }, { i: 2, type: "island" }], rivers: [] } as any;
+
+    await import("./river-generator");
+  });
+
+  it("keeps the flux of a river that gathers more than 65,535", () => {
+    (globalThis as any).Rivers.generate(false);
+
+    const [river] = pack.rivers;
+    expect(pack.rivers).toHaveLength(1);
+    expect(river.discharge).toBe(LAND * PRECIPITATION);
+    expect(river.discharge).toBeGreaterThan(65535);
+  });
+
+  it("never lets flux fall going downstream, which is what a wrap looks like", () => {
+    (globalThis as any).Rivers.generate(false);
+
+    const { fl } = pack.cells;
+    // cell LAND is the headwater and cell 1 the mouth, so flux must not increase with the cell id
+    for (let cell = 1; cell < LAND; cell++) expect(fl[cell]).toBeGreaterThanOrEqual(fl[cell + 1]);
+  });
+});

@@ -384,7 +384,9 @@ async function parseLoadedData(data: string[], mapVersion: string | null): Promi
     pack.cells.burg = Uint16Array.from(data[17].split(","), Number);
     pack.cells.conf = Uint8Array.from(data[18].split(","), Number);
     pack.cells.culture = Uint16Array.from(data[19].split(","), Number);
-    pack.cells.fl = Uint16Array.from(data[20].split(","), Number);
+    // 32-bit: a map saved after Rivers.generate went 32-bit holds values past 65,535, which a
+    // Uint16Array would wrap on load. Older saves fit either way.
+    pack.cells.fl = Uint32Array.from(data[20].split(","), Number);
     pack.cells.pop = Float32Array.from(data[21].split(","), Number);
     pack.cells.r = Uint16Array.from(data[22].split(","), Number);
     // data[23] had deprecated cells.road

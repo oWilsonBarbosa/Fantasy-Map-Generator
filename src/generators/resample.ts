@@ -84,7 +84,7 @@ class Resampler {
   ) {
     pack.biomes = parentMap.pack.biomes;
     pack.cells.biome = new Uint8Array(pack.cells.i.length);
-    pack.cells.fl = new Uint16Array(pack.cells.i.length);
+    pack.cells.fl = new Uint32Array(pack.cells.i.length); // 32-bit: see Rivers.generate
     pack.cells.s = new Int16Array(pack.cells.i.length);
     pack.cells.pop = new Float32Array(pack.cells.i.length);
     pack.cells.culture = new Uint16Array(pack.cells.i.length);

@@ -390,7 +390,11 @@ class RiverModule {
       }
     };
 
-    cells.fl = new Uint16Array(cells.i.length); // water flux array
+    // 32-bit on purpose. Flux is accumulated rainfall, so a basin's total grows with the number
+    // of cells it holds, and at the stock 100K cells the largest rivers already gather more than
+    // 65,535. A Uint16Array wrapped there and left a trunk river reading as a trickle from that
+    // point to its mouth, worse the finer the map.
+    cells.fl = new Uint32Array(cells.i.length); // water flux array
     cells.r = new Uint16Array(cells.i.length); // rivers array
     cells.conf = new Uint8Array(cells.i.length); // confluences array
     let riverNext = 1; // first river id is 1

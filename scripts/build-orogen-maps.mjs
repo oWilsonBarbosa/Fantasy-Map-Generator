@@ -21,6 +21,23 @@ let previewUrl = "http://localhost:4173";
 const MAX_VIEWPORT = 2600; // a window big enough for any crop's canvas without absurd memory
 const log = (...a) => console.log(...a);
 
+/**
+ * The seed a saved map recorded in its first line (version|note|date|seed|width|height|mapId).
+ * Only the head of the file is read: a .map is ~10 MB and the seed is in the first 200 bytes.
+ */
+function readMapSeed(file) {
+  const fd = fs.openSync(file, "r");
+  try {
+    const head = Buffer.alloc(512);
+    const length = fs.readSync(fd, head, 0, head.length, 0);
+    const seed = head.subarray(0, length).toString("utf8").split("\r\n")[0].split("|")[3];
+    if (!seed) throw new Error(`no seed in the first line of ${file}`);
+    return seed;
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 /** Read a bundle's JSON header without inflating its payload. */
 function readHeader(bytes) {
   const magic = bytes.subarray(0, 8).toString("ascii");
@@ -34,7 +51,8 @@ function parseArgs(argv) {
     bundles: path.join(ROOT, "..", "0r063N", "data", "fmg"),
     out: path.join(ROOT, "..", "0r063N", "data", "fmg", "maps"),
     cells: 100000,
-    only: null,
+    only: null, // one sheet name, or several separated by commas
+    seedFrom: null, // true = the existing map of the same name in --out; a path = that directory
     screenshots: true,
     reloadCheck: true,
     burgs: null, // null leaves FMG's "auto", which scales burgs to cells^0.2
@@ -53,7 +71,9 @@ function parseArgs(argv) {
     if (argv[i] === "--bundles") args.bundles = argv[++i];
     else if (argv[i] === "--out") args.out = argv[++i];
     else if (argv[i] === "--cells") args.cells = +argv[++i];
-    else if (argv[i] === "--only") args.only = argv[++i];
+    else if (argv[i] === "--only") args.only = argv[++i].split(",").map(name => name.trim());
+    else if (argv[i] === "--keep-seed") args.seedFrom = true;
+    else if (argv[i] === "--seed-from") args.seedFrom = argv[++i];
     else if (argv[i] === "--no-screenshots") args.screenshots = false;
     else if (argv[i] === "--no-reload-check") args.reloadCheck = false;
     else if (argv[i] === "--burgs") args.burgs = +argv[++i];
@@ -98,6 +118,7 @@ async function checkReload(browser, mapFile, expected) {
       burgs: window.pack.burgs.length - 1,
       states: window.pack.states.length - 1,
       rivers: window.pack.rivers.length,
+      maxFlux: window.pack.cells.fl.reduce((peak, flux) => (flux > peak ? flux : peak), 0),
       mapCoordinates: window.mapCoordinates
     }));
   } finally {
@@ -158,9 +179,9 @@ async function startPreview(port) {
 }
 
 /** Everything below runs inside the page, against the real app globals. */
-async function buildMap(page, bundleBytes, cells, burgs, preset, politics, scheme, lakeLimit) {
+async function buildMap(page, bundleBytes, cells, burgs, preset, politics, scheme, lakeLimit, seed) {
   return page.evaluate(
-    async ({ bytes, cells, burgs, preset, politics, scheme, lakeLimit }) => {
+    async ({ bytes, cells, burgs, preset, politics, scheme, lakeLimit, seed }) => {
       const buffer = new Uint8Array(bytes).buffer;
       const header = await window.Orogen.load(buffer);
       window.Orogen.applyOptions();
@@ -220,7 +241,9 @@ async function buildMap(page, bundleBytes, cells, burgs, preset, politics, schem
       // generate() only rebuilds the data. The SVG keeps showing the previous map
       // until the layers are redrawn, which is what regenerateMap() does around it.
       window.undraw();
-      await window.generate({});
+      // generate() takes the seed as a string and reseeds everything from it, so the same
+      // seed on the same bundle and options gives the same map
+      await window.generate(seed ? { seed } : {});
       // the relief ramp lives in the style, not the layer preset
       if (scheme) {
         window.styles.heightmap.landHeights.options.scheme = scheme;
@@ -249,6 +272,7 @@ async function buildMap(page, bundleBytes, cells, burgs, preset, politics, schem
           burgs: window.pack.burgs.length - 1,
           states: window.pack.states.length - 1,
           rivers: window.pack.rivers.length,
+          maxFlux: window.pack.cells.fl.reduce((peak, flux) => (flux > peak ? flux : peak), 0),
           cultures: window.pack.cultures.length - 1,
           religions: window.pack.religions.length - 1,
           biomes: Array.from(window.pack.cells.biome).reduce((acc, b) => {
@@ -259,7 +283,7 @@ async function buildMap(page, bundleBytes, cells, burgs, preset, politics, schem
         }
       };
     },
-    { bytes: Array.from(bundleBytes), cells, burgs, preset, politics, scheme, lakeLimit }
+    { bytes: Array.from(bundleBytes), cells, burgs, preset, politics, scheme, lakeLimit, seed }
   );
 }
 
@@ -270,7 +294,7 @@ async function main() {
   }
 
   let files = fs.readdirSync(args.bundles).filter(f => f.endsWith(".orogen")).sort();
-  if (args.only) files = files.filter(f => path.basename(f, ".orogen") === args.only);
+  if (args.only) files = files.filter(f => args.only.includes(path.basename(f, ".orogen")));
   if (!files.length) throw new Error(`no .orogen bundles in ${args.bundles}`);
 
   fs.mkdirSync(args.out, { recursive: true });
@@ -340,7 +364,26 @@ async function main() {
       // or the two generations race and the SVG ends up showing the other one.
       await page.waitForFunction(() => Boolean(window.mapId && window.Orogen && window.pack?.cells), null, { timeout: 120000 });
 
-      const { header, mapData, elapsed, stats } = await buildMap(page, bundleBytes, args.cells, burgs, args.preset, args.politics, args.scheme, args.lakeLimit);
+      // Reusing a saved map's seed regenerates the same map, so a change under test shows
+      // up as a difference between two maps rather than as noise from a fresh roll.
+      let seed = null;
+      if (args.seedFrom) {
+        const dir = args.seedFrom === true ? args.out : args.seedFrom;
+        seed = readMapSeed(path.join(dir, `${name}.map`));
+        log(`  seed ${seed} (kept from ${path.join(dir, `${name}.map`)})`);
+      }
+
+      const { header, mapData, elapsed, stats } = await buildMap(
+        page,
+        bundleBytes,
+        args.cells,
+        burgs,
+        args.preset,
+        args.politics,
+        args.scheme,
+        args.lakeLimit,
+        seed
+      );
 
       const mapFile = path.join(args.out, `${name}.map`);
       fs.writeFileSync(mapFile, mapData);
@@ -397,10 +440,13 @@ async function main() {
           reloaded.packCells === stats.packCells &&
           reloaded.burgs === stats.burgs &&
           reloaded.states === stats.states &&
-          reloaded.rivers === stats.rivers;
+          reloaded.rivers === stats.rivers &&
+          // a load path that narrowed flux would wrap the big rivers and change the peak
+          reloaded.maxFlux === stats.maxFlux;
         log(
           `  reload ${same ? "ok" : "MISMATCH"}: ${reloaded.packCells.toLocaleString()} cells` +
-            `, ${reloaded.burgs} burgs, ${reloaded.states} states, ${reloaded.rivers} rivers`
+            `, ${reloaded.burgs} burgs, ${reloaded.states} states, ${reloaded.rivers} rivers` +
+            `, peak flux ${reloaded.maxFlux.toLocaleString()}`
         );
         if (!same) pageErrors.push("reloaded map does not match what was saved");
       }

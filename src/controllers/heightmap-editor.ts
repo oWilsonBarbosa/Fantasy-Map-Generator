@@ -535,7 +535,7 @@ function restoreRiskedData(): void {
   const good = new Uint16Array(l);
 
   // rivers data, stored only if allowErosion is unchecked
-  const fl = new Uint16Array(l);
+  const fl = new Uint32Array(l); // 32-bit like pack.cells.fl, or a big river is truncated on the round trip
   const r = new Uint16Array(l);
   const conf = new Uint8Array(l);
 
@@ -610,7 +610,7 @@ function restoreRiskedData(): void {
   if (!erosionAllowed) {
     pack.cells.r = new Uint16Array(n);
     pack.cells.conf = new Uint8Array(n);
-    pack.cells.fl = new Uint16Array(n);
+    pack.cells.fl = new Uint32Array(n);
   }
 
   for (const i of pack.cells.i) {
