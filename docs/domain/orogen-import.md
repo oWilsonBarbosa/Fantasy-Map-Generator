@@ -128,6 +128,27 @@ script locks the cell-density option before generating (`generate()` calls
 sizes the browser window to the bundle's canvas so the rendered PNG shows the
 whole map.
 
+### Regenerating a subset, and comparing two runs
+
+Each map gets a fresh random seed unless told otherwise, so regenerating a sheet to
+test a change also re-rolls everything the seed touches, and the change is lost in
+the noise. Two options make a before/after comparison meaningful:
+
+- `--only a,b,c` restricts the run to the named bundles (a single name still works).
+- `--keep-seed` reuses the seed recorded in the existing map of the same name in
+  `--out`; `--seed-from DIR` takes it from another directory, so a control can be
+  written somewhere it will not overwrite the maps it is compared with.
+
+The same seed on the same bundle and options reproduces the map field for field,
+with one exception: the random river `type` label (`Creek`/`River`, `Fork`/`Branch`)
+and some marker notes are re-rolled. Everything else, including every per-cell array,
+matches. That is what made it possible to show that widening river flux to 32 bits
+changed only the cells that had wrapped.
+
+The reload check that follows each map compares peak flux as well as counts. A load
+path that narrowed the flux array would wrap the biggest rivers on the way back in and
+change that peak.
+
 ## Limits worth knowing
 
 - FMG keeps a single temperature per cell, so a planet's summer and winter fields
